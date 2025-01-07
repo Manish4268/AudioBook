@@ -1,0 +1,338 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+
+  RedisServerlessCache:
+    Type: AWS::ElastiCache::ServerlessCache
+    Properties:
+      ServerlessCacheName: "MyServerlessRedisCache" 
+      Engine: "redis"    
+      
+  # Lambda Functions
+  InsertDataIntoS3CF:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: InsertDataIntoS3CF
+      Description: "Insert Into S3"
+      Code:
+        S3Bucket: term-assignment-initial   # The S3 bucket where your ZIP file is stored
+        S3Key: InsertDataIntoS3CF/lambda_function.zip # The path to the ZIP file within the S3 bucket
+      Role: arn:aws:iam::941736614857:role/LabRole
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Architectures:
+        - x86_64
+      Timeout: 10
+      Tags:
+        - Key: Environment
+          Value: Dev
+      VpcConfig:
+        SubnetIds:
+          - subnet-098c64e5a17639b6f  
+          - subnet-0c6bc197370c0141e   
+          - subnet-0c4eb988ae29b0b27  
+          - subnet-01ab0beb2a332abb1   
+          - subnet-0b3f2477070059b6c  
+          - subnet-0ee10523c20d16753   
+        SecurityGroupIds:
+          - sg-01983c5fbadf51fc4        
+      Environment:
+        Variables:
+          REDIS_ENDPOINT: !GetAtt RedisServerlessCache.Endpoint.Address
+
+  GetDataFromS3:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GetDataFromS3
+      Description: "Get Data From S3"
+      Code:
+        S3Bucket: term-assignment-initial   
+        S3Key: GetDataFromS3/lambda_function.zip 
+      Role: arn:aws:iam::941736614857:role/LabRole
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Architectures:
+        - x86_64
+      Timeout: 10
+      Tags:
+        - Key: Environment
+          Value: Dev
+      VpcConfig:
+        SubnetIds:
+          - subnet-098c64e5a17639b6f  
+          - subnet-0c6bc197370c0141e   
+          - subnet-0c4eb988ae29b0b27  
+          - subnet-01ab0beb2a332abb1   
+          - subnet-0b3f2477070059b6c  
+          - subnet-0ee10523c20d16753   
+        SecurityGroupIds:
+          - sg-01983c5fbadf51fc4        
+    
+  S3TriggerCF:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: S3TriggerCF
+      Description: "Trigger on S3"
+      Code:
+        S3Bucket: term-assignment-initial   
+        S3Key: S3TriggerCF/lambda_function.zip 
+      Role: arn:aws:iam::941736614857:role/LabRole
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Architectures:
+        - x86_64
+      Timeout: 10
+      Tags:
+        - Key: Environment
+          Value: Dev
+      VpcConfig:
+        SubnetIds:
+          - subnet-098c64e5a17639b6f
+          - subnet-0c6bc197370c0141e
+          - subnet-0c4eb988ae29b0b27
+          - subnet-01ab0beb2a332abb1
+          - subnet-0b3f2477070059b6c
+          - subnet-0ee10523c20d16753
+        SecurityGroupIds:
+          - sg-01983c5fbadf51fc4
+      Environment:
+        Variables:
+          REDIS_ENDPOINT: !GetAtt RedisServerlessCache.Endpoint.Address
+
+  # API Gateway Rest API
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: "FileUploadAPI"
+      Description: "API Gateway for uploading files to S3"
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # A resource under the API Gateway for the path /PutFileIntoS3
+  PutFileIntoS3Resource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: 
+        Fn::GetAtt: 
+          - ApiGatewayRestApi
+          - RootResourceId
+      PathPart: "PutFileIntoS3"
+      RestApiId: 
+        Ref: ApiGatewayRestApi
+
+  # Grants API Gateway permission to invoke the InsertDataIntoS3CF Lambda function.
+  PutFileIntoS3LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt InsertDataIntoS3CF.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: 
+        Fn::Sub: 
+          - arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*
+          - ApiGatewayRestApi: 
+              Ref: ApiGatewayRestApi
+
+  # Defines a POST method for the /PutFileIntoS3 resource.
+  PutFileIntoS3PostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ResourceId: 
+        Ref: PutFileIntoS3Resource
+      RestApiId: 
+        Ref: ApiGatewayRestApi
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: 
+          Fn::Sub: 
+            - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${InsertDataIntoS3CFArn}/invocations
+            - InsertDataIntoS3CFArn: !GetAtt InsertDataIntoS3CF.Arn
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # Defines an OPTIONS method for the /PutFileIntoS3 resource for CORS configuration.
+  PutFileIntoS3OptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ResourceId: 
+        Ref: PutFileIntoS3Resource
+      RestApiId: 
+        Ref: ApiGatewayRestApi
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET, POST, OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: 'Empty'
+  
+  # A resource under the API Gateway for the path /GetTextFromFile.
+  GetTextFromFileResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: 
+        Fn::GetAtt: 
+          - ApiGatewayRestApi
+          - RootResourceId
+      PathPart: "GetTextFromFile"
+      RestApiId: 
+        Ref: ApiGatewayRestApi
+
+  # Grants API Gateway permission to invoke the GetDataFromS3 Lambda function.
+  GetTextFromFileLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt GetDataFromS3.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: 
+        Fn::Sub: 
+          - arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*
+          - ApiGatewayRestApi: 
+              Ref: ApiGatewayRestApi
+
+  # Defines a GET method for the /GetTextFromFile resource.
+  GetTextFromFileGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ResourceId: 
+        Ref: GetTextFromFileResource
+      RestApiId: 
+        Ref: ApiGatewayRestApi
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: 
+          Fn::Sub: 
+            - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetDataFromS3Arn}/invocations
+            - GetDataFromS3Arn: !GetAtt GetDataFromS3.Arn
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # Defines an OPTIONS method for the /GetTextFromFile resource for CORS configuration.
+  GetTextFromFileOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ResourceId: 
+        Ref: GetTextFromFileResource
+      RestApiId: 
+        Ref: ApiGatewayRestApi
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET, POST, OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: 'Empty'
+
+  termassignmentbucketcf:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: termassignmentbucketcf
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt S3TriggerCF.Arn
+
+  # S3 Bucket Permissions
+  S3Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt S3TriggerCF.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  
+  # Deploys the API Gateway configuration to a stage named Prod.
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - PutFileIntoS3PostMethod
+      - GetTextFromFileGetMethod
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      Description: "Deployment for FileUploadAPI"
+      StageName: "Prod"
+
+  # Elastic Beanstalk Application
+  MyElasticBeanstalkApplication:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      ApplicationName: ReactApp
+
+  # Elastic Beanstalk Application Version
+  MyElasticBeanstalkAppVersion:
+    Type: AWS::ElasticBeanstalk::ApplicationVersion
+    Properties:
+      ApplicationName: !Ref MyElasticBeanstalkApplication
+      SourceBundle:
+        S3Bucket: term-assignment-initial
+        S3Key: React.zip
+
+  # Elastic Beanstalk Environment
+  MyElasticBeanstalkEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      ApplicationName: !Ref MyElasticBeanstalkApplication 
+      SolutionStackName: "64bit Amazon Linux 2023 v6.4.0 running Node.js 22"
+      VersionLabel: !Ref MyElasticBeanstalkAppVersion
+      OptionSettings:
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: REACT_APP_API_GATEWAY
+          Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+        - Namespace: 'aws:autoscaling:launchconfiguration'
+          OptionName: IamInstanceProfile
+          Value: LabInstanceProfile
+        - Namespace: 'aws:elasticbeanstalk:environment'
+          OptionName: ServiceRole
+          Value: LabRole
+          
+  # Enabling Guard Duty
+  GuardDutyDetector:
+    Type: "AWS::GuardDuty::Detector"
+    Properties:
+      Enable: true
+      FindingPublishingFrequency: "FIFTEEN_MINUTES" 
+
+                      
+
